@@ -1,171 +1,124 @@
 /*
  Project by Hugo Cardante
- 17/02/2024
- */
+ Started on: 17/02/2024
+ Last updated on: 18/02/2024
+*/
 
 import Cocoa
 import IOKit.ps
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
-  var statusBar: NSStatusBar!
-  var statusBarItem: NSStatusItem!
-  var batteryStatusTimer: Timer?
-  var lastUnpluggedTime: Date?  // The time when the computer was last unplugged
-  var hasBeenChargedSinceStart: Bool = false
-  var displayActiveSinceLastUnplugged: TimeInterval = 0
-  var activeDisplayMenuItem: NSMenuItem!
-  var totalSleepDuration: TimeInterval = 0
-  var sleepStartTime: Date?
+    var statusBar: NSStatusBar!
+    var statusBarItem: NSStatusItem!
+    var batteryStatusTimer: Timer?
+    var screenOnTimeSinceLastUnplugged: TimeInterval = 0
+    var totalUptimeSinceAppStarted: TimeInterval = 0
+    var appStartTime: Date?
+    var activeDisplayMenuItem: NSMenuItem!
+    var totalUptimeMenuItem: NSMenuItem!
+    var lastUpdateTime: Date?
+    var isSleeping: Bool = false
+    var isCharging: Bool = false
 
-  func applicationDidFinishLaunching(_ aNotification: Notification) {
-    // Initialize the status bar item
-    statusBar = NSStatusBar.system
-    statusBarItem = statusBar.statusItem(withLength: NSStatusItem.variableLength)
-    statusBarItem.button?.title = "Calculating..."
-
-    // Load saved state
-    loadState()
-
-    // Set up the menu
-    let menu = NSMenu()
-
-    // Add a menu item for the active display time
-    activeDisplayMenuItem = NSMenuItem(
-      title: "Active Display Time: Calculating...", action: nil, keyEquivalent: "")
-    activeDisplayMenuItem.isEnabled = false  // Make it non-selectable
-    menu.addItem(activeDisplayMenuItem)
-
-    // Add a menu item for the creator text
-    let creatorMenuItem = NSMenuItem(
-      title: "Created by: Hugo Cardante", action: nil, keyEquivalent: "")
-    creatorMenuItem.isEnabled = false  // Make it non-selectable
-    menu.addItem(creatorMenuItem)
-
-    menu.addItem(NSMenuItem.separator())
-
-    let quitMenuItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
-    menu.addItem(quitMenuItem)
-
-    statusBarItem.menu = menu
-
-    // sleep/wake notifications
-    NSWorkspace.shared.notificationCenter.addObserver(
-      self, selector: #selector(systemDidWake), name: NSWorkspace.didWakeNotification, object: nil)
-    NSWorkspace.shared.notificationCenter.addObserver(
-      self, selector: #selector(systemWillSleep), name: NSWorkspace.willSleepNotification,
-      object: nil)
-
-    // Timer to update the battery status every second
-    batteryStatusTimer = Timer.scheduledTimer(
-      timeInterval: 1.0,
-      target: self,
-      selector: #selector(updateBatteryStatusAndCheckPowerSource),
-      userInfo: nil,
-      repeats: true)
-  }
-
-  @objc func updateBatteryStatusAndCheckPowerSource() {
-    let powerSourceInfo = IOPSCopyPowerSourcesInfo().takeRetainedValue()
-    let powerSources: NSArray = IOPSCopyPowerSourcesList(powerSourceInfo).takeRetainedValue()
-
-    var isCurrentlyCharging: Bool = false
-    var isOnBattery: Bool = false
-    for powerSource in powerSources {
-      if let info = IOPSGetPowerSourceDescription(powerSourceInfo, powerSource as CFTypeRef)
-        .takeUnretainedValue() as? [String: Any],
-        let isCharging = info[kIOPSIsChargingKey] as? Bool,
-        let powerSourceState = info[kIOPSPowerSourceStateKey] as? String
-      {
-        isCurrentlyCharging = isCharging
-        isOnBattery = (powerSourceState == kIOPSBatteryPowerValue)
-        break
-      }
+    func applicationDidFinishLaunching(_ aNotification: Notification) {
+        statusBar = NSStatusBar.system
+        statusBarItem = statusBar.statusItem(withLength: NSStatusItem.variableLength)
+        statusBarItem.button?.title = "Calculating..."
+        
+        appStartTime = Date()
+        lastUpdateTime = appStartTime // Initialize the last update time
+        
+        setupMenu()
+        registerForNotifications()
+        startTimer()
+        loadState() // Load saved state, if any
     }
 
-    DispatchQueue.main.async {
-      if isCurrentlyCharging || !isOnBattery {
-        self.totalSleepDuration = 0
-      }
+    func setupMenu() {
+        let menu = NSMenu()
 
-      if isOnBattery && !isCurrentlyCharging && self.lastUnpluggedTime == nil {
-        self.lastUnpluggedTime = Date()
-        print("Set lastUnpluggedTime")
-      }
+        activeDisplayMenuItem = NSMenuItem(title: "Screen On Time: Calculating...", action: nil, keyEquivalent: "")
+        totalUptimeMenuItem = NSMenuItem(title: "Total Uptime: Calculating...", action: nil, keyEquivalent: "")
+        let creatorMenuItem = NSMenuItem(title: "Created by: Hugo Cardante", action: nil, keyEquivalent: "")
+        creatorMenuItem.isEnabled = false // Make non-selectable
+        let quitMenuItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
+        
+        menu.addItem(activeDisplayMenuItem)
+        menu.addItem(totalUptimeMenuItem)
+        menu.addItem(creatorMenuItem)
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(quitMenuItem)
 
-      self.updateUI(isOnBattery: isOnBattery, isCurrentlyCharging: isCurrentlyCharging)
+        statusBarItem.menu = menu
     }
-  }
 
-  func updateUI(isOnBattery: Bool, isCurrentlyCharging: Bool) {
-    let elapsedTime: TimeInterval
-
-    // Check if the computer is charging
-    if isCurrentlyCharging {
-      self.statusBarItem.button?.title = "Charging..."
-    } else if isOnBattery {
-      // Display logic for when on battery and not charging
-      if let lastUnpluggedTime = self.lastUnpluggedTime, isOnBattery && !isCurrentlyCharging {
-        // Only calculate elapsed time if we're on battery and not charging
-        elapsedTime = Date().timeIntervalSince(lastUnpluggedTime)
-      } else {
-        elapsedTime = 0
-      }
-
-      let activeTimeWithoutSleep = max(elapsedTime - totalSleepDuration, 0)
-      let hoursActiveWithoutSleep = Int(activeTimeWithoutSleep) / 3600
-      let minutesActiveWithoutSleep = (Int(activeTimeWithoutSleep) % 3600) / 60
-
-      // Display total active time since unplugged in the top bar
-      let hoursTotal = Int(elapsedTime) / 3600
-      let minutesTotal = (Int(elapsedTime) % 3600) / 60
-      self.statusBarItem.button?.title = "Active: \(hoursTotal)h \(minutesTotal)m"
-
-      // Display active time minus sleep time in the menu
-      self.activeDisplayMenuItem.title =
-        "Display On: \(hoursActiveWithoutSleep)h \(minutesActiveWithoutSleep)m"
-    } else {
-      // Display logic for when plugged in but not charging
-      self.statusBarItem.button?.title = "Plugged In"
+    func registerForNotifications() {
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        notificationCenter.addObserver(self, selector: #selector(systemDidWake), name: NSWorkspace.didWakeNotification, object: nil)
+        notificationCenter.addObserver(self, selector: #selector(systemWillSleep), name: NSWorkspace.willSleepNotification, object: nil)
     }
-  }
 
-  func applicationWillTerminate(_ aNotification: Notification) {
-    saveState()
-    // Invalidate the timer when the application is about to terminate
-    batteryStatusTimer?.invalidate()
-  }
-
-  @objc func systemWillSleep(notification: Notification) {
-    sleepStartTime = Date()
-    print("System will sleep at: \(String(describing: sleepStartTime))")
-  }
-
-  @objc func systemDidWake(notification: Notification) {
-    if let sleepStart = sleepStartTime {
-      let sleepDuration = Date().timeIntervalSince(sleepStart)
-      totalSleepDuration += sleepDuration
-      print("Woke up, adding \(sleepDuration) to totalSleepDuration, now: \(totalSleepDuration)")
+    func startTimer() {
+        batteryStatusTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.updateTimeTracking()
+        }
     }
-  }
 
-  func saveState() {
-    UserDefaults.standard.set(lastUnpluggedTime, forKey: "lastUnpluggedTime")
-    UserDefaults.standard.set(hasBeenChargedSinceStart, forKey: "hasBeenChargedSinceStart")
-    // Save the displayActiveSinceLastUnplugged
-    UserDefaults.standard.set(
-      displayActiveSinceLastUnplugged, forKey: "displayActiveSinceLastUnplugged")
-  }
+    @objc func updateTimeTracking() {
+        guard let lastUpdate = lastUpdateTime else { return }
+        let now = Date()
+        let elapsedTime = now.timeIntervalSince(lastUpdate)
+        lastUpdateTime = now
 
-  func loadState() {
-    lastUnpluggedTime = UserDefaults.standard.object(forKey: "lastUnpluggedTime") as? Date
-    hasBeenChargedSinceStart = UserDefaults.standard.bool(forKey: "hasBeenChargedSinceStart")
-    // Load the displayActiveSinceLastUnplugged
-    displayActiveSinceLastUnplugged = UserDefaults.standard.double(
-      forKey: "displayActiveSinceLastUnplugged")
-  }
+        // Update total uptime regardless of sleeping or charging status
+        totalUptimeSinceAppStarted += elapsedTime
 
-  @objc func quitApp() {
-    NSApplication.shared.terminate(self)
-  }
+        // Only update screen on time if not sleeping and not charging
+        if !isSleeping && !isCharging {
+            screenOnTimeSinceLastUnplugged += elapsedTime
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.updateUI()
+        }
+    }
+
+    func updateUI() {
+        let screenOnHours = Int(screenOnTimeSinceLastUnplugged) / 3600
+        let screenOnMinutes = (Int(screenOnTimeSinceLastUnplugged) % 3600) / 60
+        statusBarItem.button?.title = "Aktiv: \(screenOnHours)h \(screenOnMinutes)m"
+        activeDisplayMenuItem.title = "Screen On: \(screenOnHours)h \(screenOnMinutes)m"
+
+        let uptimeHours = Int(totalUptimeSinceAppStarted) / 3600
+        let uptimeMinutes = (Int(totalUptimeSinceAppStarted) % 3600) / 60
+        totalUptimeMenuItem.title = "Total Uptime: \(uptimeHours)h \(uptimeMinutes)m"
+    }
+
+    @objc func systemWillSleep(notification: Notification) {
+        isSleeping = true
+    }
+
+    @objc func systemDidWake(notification: Notification) {
+        isSleeping = false
+        lastUpdateTime = Date() // Reset update time on wake
+    }
+
+    func applicationWillTerminate(_ aNotification: Notification) {
+        saveState()
+    }
+
+    func saveState() {
+        UserDefaults.standard.set(screenOnTimeSinceLastUnplugged, forKey: "screenOnTimeSinceLastUnplugged")
+        UserDefaults.standard.set(totalUptimeSinceAppStarted, forKey: "totalUptimeSinceAppStarted")
+    }
+
+    func loadState() {
+        screenOnTimeSinceLastUnplugged = UserDefaults.standard.double(forKey: "screenOnTimeSinceLastUnplugged")
+        totalUptimeSinceAppStarted = UserDefaults.standard.double(forKey: "totalUptimeSinceAppStarted")
+    }
+
+    @objc func quitApp() {
+        NSApplication.shared.terminate(self)
+    }
 }
