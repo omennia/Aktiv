@@ -152,11 +152,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   func saveState() {
     UserDefaults.standard.set(lastUnpluggedTime, forKey: "lastUnpluggedTime")
     UserDefaults.standard.set(hasBeenChargedSinceStart, forKey: "hasBeenChargedSinceStart")
+    // Save the displayActiveSinceLastUnplugged
+    UserDefaults.standard.set(
+      displayActiveSinceLastUnplugged, forKey: "displayActiveSinceLastUnplugged")
   }
 
   func loadState() {
     lastUnpluggedTime = UserDefaults.standard.object(forKey: "lastUnpluggedTime") as? Date
     hasBeenChargedSinceStart = UserDefaults.standard.bool(forKey: "hasBeenChargedSinceStart")
+    // Load the displayActiveSinceLastUnplugged
+    displayActiveSinceLastUnplugged = UserDefaults.standard.double(
+      forKey: "displayActiveSinceLastUnplugged")
   }
 
   @objc func quitApp() {
